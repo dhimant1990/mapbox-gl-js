@@ -54,6 +54,9 @@ export type SymbolQuad = {
 // on one edge in some cases.
 const border = IMAGE_PADDING;
 
+const ZERO_OFFSET = [0, 0];
+const ZERO_POINT = new Point(0, 0);
+
 /**
  * Create the quads used for rendering an icon.
  * @private
@@ -153,7 +156,7 @@ export function getIconQuads(
         const minFontScaleY = fixedContentHeight / pixelRatio / iconHeight;
 
         // Icon quad is padded, so texture coordinates also need to be padded.
-        return {tl, tr, bl, br, tex: subRect, writingMode: undefined, glyphOffset: [0, 0], sectionIndex: 0, pixelOffsetTL, pixelOffsetBR, minFontScaleX, minFontScaleY, isSDF: isSDFIcon};
+        return {tl, tr, bl, br, tex: subRect, writingMode: undefined, glyphOffset: ZERO_OFFSET, sectionIndex: 0, pixelOffsetTL, pixelOffsetBR, minFontScaleX, minFontScaleY, isSDF: isSDFIcon};
     };
 
     if (!hasIconTextFit || (!image.stretchX && !image.stretchY)) {
@@ -221,13 +224,11 @@ function getRotateOffset(textOffset: [number, number]) {
     const x = textOffset[0], y = textOffset[1];
     const product = x * y;
     if (product > 0) {
-        return [x, -y];
+        return new Point(x, -y);
     } else if (product < 0) {
-        return [-x, y];
-    } else if (x === 0) {
-        return [y, x];
+        return new Point(-x, y);
     } else {
-        return [y, -x];
+        return new Point(y, -x);
     }
 }
 
@@ -256,7 +257,11 @@ export function getGlyphQuads(anchor: Anchor,
     if (shaping.positionedLines.length === 0) return quads;
 
     const textRotate = layer.layout.get('text-rotate').evaluate(feature, {}) * Math.PI / 180;
+    const textOffsetPoint = new Point(textOffset[0], textOffset[1]);
     const rotateOffset = getRotateOffset(textOffset);
+
+    const pixelOffsetTL = ZERO_POINT;
+    const pixelOffsetBR = ZERO_POINT;
 
     let shapingHeight = Math.abs(shaping.top - shaping.bottom);
     for (const line of shaping.positionedLines) {
@@ -305,21 +310,13 @@ export function getGlyphQuads(anchor: Anchor,
 
             const glyphOffset = alongLine ?
                 [positionedGlyph.x + halfAdvance, positionedGlyph.y] :
-                [0, 0];
+                ZERO_OFFSET;
 
-            let builtInOffset = [0, 0];
-            let verticalizedLabelOffset = [0, 0];
-            let useRotateOffset = false;
-            if (!alongLine) {
-                if (rotateVerticalGlyph) {
-                // Vertical POI labels that are rotated 90deg CW and whose glyphs must preserve upright orientation
-                // need to be rotated 90deg CCW. After a quad is rotated, it is translated to the original built-in offset.
-                    verticalizedLabelOffset =
-                        [positionedGlyph.x + halfAdvance + rotateOffset[0], positionedGlyph.y + rotateOffset[1] - lineOffset];
-                    useRotateOffset = true;
-                } else {
-                    builtInOffset =  [positionedGlyph.x + halfAdvance + textOffset[0], positionedGlyph.y + textOffset[1] - lineOffset];
-                }
+            let builtInOffsetX = 0;
+            let builtInOffsetY = 0;
+            if (!alongLine && !rotateVerticalGlyph) {
+                builtInOffsetX = positionedGlyph.x + halfAdvance + textOffset[0];
+                builtInOffsetY = positionedGlyph.y + textOffset[1] - lineOffset;
             }
 
             const paddedWidth =
@@ -329,8 +326,8 @@ export function getGlyphQuads(anchor: Anchor,
 
             let tl, tr, bl, br;
             if (!rotateVerticalGlyph) {
-                const x1 = (metrics.left - rectBuffer) * positionedGlyph.scale - halfAdvance + builtInOffset[0];
-                const y1 = (-metrics.top - rectBuffer) * positionedGlyph.scale + builtInOffset[1];
+                const x1 = (metrics.left - rectBuffer) * positionedGlyph.scale - halfAdvance + builtInOffsetX;
+                const y1 = (-metrics.top - rectBuffer) * positionedGlyph.scale + builtInOffsetY;
                 const x2 = x1 + paddedWidth;
                 const y2 = y1 + paddedHeight;
 
@@ -357,14 +354,19 @@ export function getGlyphQuads(anchor: Anchor,
                 const yShift = (positionedGlyph.y - currentOffset);
                 const center = new Point(-halfAdvance, halfAdvance - yShift);
                 const verticalRotation = -Math.PI / 2;
-                const verticalOffsetCorrection = new Point(...verticalizedLabelOffset);
                 // Relative position before rotation
                 // tl ----- tr
                 //   |     |
                 //   |     |
                 // bl ----- br
-                tl = new Point(-halfAdvance + builtInOffset[0], builtInOffset[1]);
-                tl._rotateAround(verticalRotation, center)._add(verticalOffsetCorrection);
+                tl = new Point(-halfAdvance + builtInOffsetX, builtInOffsetY);
+                tl._rotateAround(verticalRotation, center);
+                // Vertical POI labels that are rotated 90deg CW and whose glyphs must preserve upright orientation
+                // need to be rotated 90deg CCW. After a quad is rotated, it is translated to the original built-in offset.
+                if (!alongLine) {
+                    tl.x += positionedGlyph.x + halfAdvance + rotateOffset.x;
+                    tl.y += positionedGlyph.y + rotateOffset.y - lineOffset;
+                }
 
                 // Relative position after rotating
                 // tr ----- br
@@ -411,13 +413,13 @@ export function getGlyphQuads(anchor: Anchor,
             if (textRotate) {
                 let center;
                 if (!alongLine) {
-                    if (useRotateOffset) {
-                        center = new Point(rotateOffset[0], rotateOffset[1]);
+                    if (rotateVerticalGlyph) {
+                        center = rotateOffset;
                     } else {
-                        center = new Point(textOffset[0], textOffset[1]);
+                        center = textOffsetPoint;
                     }
                 } else {
-                    center = new Point(0, 0);
+                    center = ZERO_POINT;
                 }
                 tl._rotateAround(textRotate, center);
                 tr._rotateAround(textRotate, center);
@@ -425,8 +427,6 @@ export function getGlyphQuads(anchor: Anchor,
                 br._rotateAround(textRotate, center);
             }
 
-            const pixelOffsetTL = new Point(0, 0);
-            const pixelOffsetBR = new Point(0, 0);
             const minFontScaleX = 0;
             const minFontScaleY = 0;
             quads.push({tl, tr, bl, br, tex: textureRect, writingMode: shaping.writingMode, glyphOffset, sectionIndex: positionedGlyph.sectionIndex, isSDF, pixelOffsetTL, pixelOffsetBR, minFontScaleX, minFontScaleY});
